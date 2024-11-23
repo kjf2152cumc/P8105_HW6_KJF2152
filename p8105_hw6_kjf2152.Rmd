@@ -234,37 +234,123 @@ city_results |>
 
 # Problem 3
 
-In this problem, you will analyze data gathered to understand the effects of several variables on a child’s birthweight. This dataset, available here, consists of roughly 4000 children and includes the following variables:
+Bring in the birtweight data and `mutate` it such that variables coded as 1, 2, etc aren't treated as continuous: 
+```{r}
+bwt_df = 
+  read_csv("local data/birthweight.csv")
 
-babysex: baby’s sex (male = 1, female = 2)
-bhead: baby’s head circumference at birth (centimeters)
-blength: baby’s length at birth (centimeteres)
-bwt: baby’s birth weight (grams)
-delwt: mother’s weight at delivery (pounds)
-fincome: family monthly income (in hundreds, rounded)
-frace: father’s race (1 = White, 2 = Black, 3 = Asian, 4 = Puerto Rican, 8 = Other, 9 = Unknown)
-gaweeks: gestational age in weeks
-malform: presence of malformations that could affect weight (0 = absent, 1 = present)
-menarche: mother’s age at menarche (years)
-mheigth: mother’s height (inches)
-momage: mother’s age at delivery (years)
-mrace: mother’s race (1 = White, 2 = Black, 3 = Asian, 4 = Puerto Rican, 8 = Other)
-parity: number of live births prior to this pregnancy
-pnumlbw: previous number of low birth weight babies
-pnumgsa: number of prior small for gestational age babies
-ppbmi: mother’s pre-pregnancy BMI
-ppwt: mother’s pre-pregnancy weight (pounds)
-smoken: average number of cigarettes smoked per day during pregnancy
-wtgain: mother’s weight gain during pregnancy (pounds)
-Load and clean the data for regression analysis (i.e. convert numeric to factor where appropriate, check for missing data, etc.).
+spec(bwt_df)
 
-Propose a regression model for birthweight. This model may be based on a hypothesized structure for the factors that underly birthweight, on a data-driven model-building process, or a combination of the two. Describe your modeling process and show a plot of model residuals against fitted values – use add_predictions and add_residuals in making this plot.
+bwt_df = 
+  bwt_df |> 
+  mutate(
+    babysex = factor(babysex, levels = c(1, 2), 
+                     labels = c("Male", "Female")),
+    frace = factor(frace),
+    mrace = factor(mrace),
+    malform = factor(malform),
+    smoken = as.numeric(smoken)
+  ) |> 
+  drop_na()
+```
 
-Compare your model to two others:
+Propose a regression model for birthweight. This model may be based on a hypothesized structure for the factors that underly birthweight:
+```{r}
+bwt_model1 = 
+  lm(bwt ~ gaweeks + 
+       ppbmi + 
+       smoken + 
+       parity + 
+       malform +
+       pnumlbw,
+     data = bwt_df)
+```
 
-One using length at birth and gestational age as predictors (main effects only)
-One using head circumference, length, sex, and all interactions (including the three-way interaction) between these
-Make this comparison in terms of the cross-validated prediction error; use crossv_mc and functions in purrr as appropriate.
 
-Note that although we expect your model to be reasonable, model building itself is not a main idea of the course and we don’t necessarily expect your model to be “optimal”.
+**Describe your modeling process**: I looked for variables that I don't suspect to increase multi-colinearity. For example, I know from previous knowledge that birthweight is correlated with a child's dimensions and with the mother's weight at delivery so I chose not to use those variables. I was curious about the effects of previous medical problems and risk factors so I chose to regress `bwt` on `gaweeks`, controlling for `smoken`, `parity`, `malform`, `pnumlbw`. But Kaleb, isn't there a clear relationship between gestational age and weight? Yes, but that relationship is important clinically and indicative of medical conditions and thus I think a meaningful predictor to test. 
+
+Use `ggplot` to show residuals graphed against fitted values Use `add_predictions` and `add_residuals` in making this plot:
+```{r}
+bwt_df = 
+  bwt_df |> 
+  add_predictions(bwt_model1) |> 
+  add_residuals(bwt_model1)
+
+bwt_df |> 
+ggplot(aes(x = pred, y = resid)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, 
+             color = "red", 
+             linetype = "dashed") +
+  labs(
+    title = "Residuals vs Fitted Values",
+    x = "Fitted Values",
+    y = "Residuals"
+  ) +
+  theme_minimal()
+
+```
+
+
+**Comment on plot of residuals v fitted values**: Hmmmm... I think linearity is met. Not entirely sure on homoscedasticity... 
+
+
+Compare the first model to one using length at birth and gestational age as predictors (main effects only). Also compare it to one using head circumference, length, sex, and all interactions (including the three-way interaction) between these. Use `crossv_mc` and functions in `purrr` as appropriate: 
+```{r}
+cv_df = 
+  crossv_mc(bwt_df, 100) |> 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  )
+
+cv_res_df = 
+  cv_df |> 
+  mutate(
+    hypothesized_mod = 
+      map(train, ~ lm(bwt ~ gaweeks + 
+       ppbmi + 
+       smoken + 
+       parity + 
+       malform +
+       pnumlbw, data = .)),
+    model_1 = 
+      map(train, ~ lm(bwt ~ blength + gaweeks, data = .)),
+    model_2 = 
+      map(train, ~ lm(bwt ~ bhead +
+                        blength + 
+                        babysex +
+                        bhead*blength + 
+                        bhead*babysex +
+                        blength*babysex, data = .))
+  ) |> 
+  mutate(
+    rmse_hypothesized = map2_dbl(hypothesized_mod, test, rmse),
+    rmse_model_1 = map2_dbl(model_1, test, rmse),
+    rmse_model_2 = map2_dbl(model_2, test, rmse)
+  )
+
+cv_summary = 
+  cv_res_df |> 
+  select(starts_with("rmse")) |> 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_"
+  )
+
+cv_summary |> 
+  ggplot(aes(x = model, y = rmse)) + 
+  geom_violin() +
+  labs(
+    title = "Model Comparison via RMSE",
+    x = "Model",
+    y = "RMSE"
+  )
+
+```
+
+
+**Comments**: My model was worse than the other models (RMSE > 400). This might be due to outliars seen in the plot of fitted values and residuals. I also included more variables which increases opportunities for error. Model 1 has higher root mean square error than model 2 but model 2 gives a warning `prediction from rank-deficient fit`. This could be due to too many colinear variables or too many predictors for too few observations (I don't think the latter is as likely as the former). 
 
